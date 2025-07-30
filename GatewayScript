@@ -25,16 +25,51 @@ try {
     
     Write-Host "Found $($environments.Count) environments" -ForegroundColor Cyan
     
-    # Get all data gateways
+    # Get all data gateways (try different cmdlet names as they vary by module version)
     Write-Host "Retrieving data gateways..." -ForegroundColor Green
-    $gateways = Get-PowerAppGateway
+    $gateways = @()
+    
+    try {
+        # Try the most common cmdlet names
+        if (Get-Command "Get-AdminPowerAppGateway" -ErrorAction SilentlyContinue) {
+            $gateways = Get-AdminPowerAppGateway
+        }
+        elseif (Get-Command "Get-PowerAppGateway" -ErrorAction SilentlyContinue) {
+            $gateways = Get-PowerAppGateway
+        }
+        elseif (Get-Command "Get-DataGateway" -ErrorAction SilentlyContinue) {
+            $gateways = Get-DataGateway
+        }
+        else {
+            Write-Warning "No gateway cmdlet found. Gateway names will show as 'Unknown'"
+            $gateways = @()
+        }
+    }
+    catch {
+        Write-Warning "Could not retrieve gateways: $($_.Exception.Message)"
+        $gateways = @()
+    }
     
     Write-Host "Found $($gateways.Count) data gateways" -ForegroundColor Cyan
     
     # Create gateway lookup for easier reference
     $gatewayLookup = @{}
     foreach ($gateway in $gateways) {
-        $gatewayLookup[$gateway.GatewayId] = $gateway
+        # Handle different property names depending on the cmdlet used
+        $gatewayId = $null
+        if ($gateway.GatewayId) {
+            $gatewayId = $gateway.GatewayId
+        }
+        elseif ($gateway.Id) {
+            $gatewayId = $gateway.Id
+        }
+        elseif ($gateway.Name) {
+            $gatewayId = $gateway.Name
+        }
+        
+        if ($gatewayId) {
+            $gatewayLookup[$gatewayId] = $gateway
+        }
     }
     
     # Process each environment
@@ -81,13 +116,46 @@ try {
                 }
             }
             
+            # Get all connections in this environment
+            $allConnections = Get-AdminPowerAppConnection -EnvironmentName $env.EnvironmentName
+            
             # Get Power Automate flows in this environment
             $flows = Get-AdminFlow -EnvironmentName $env.EnvironmentName
             
             foreach ($flow in $flows) {
                 try {
-                    # Get flow connections
-                    $flowConnections = Get-AdminFlowConnection -EnvironmentName $env.EnvironmentName -FlowName $flow.FlowName
+                    # Check flow definition for connection references
+                    $flowDefinition = $flow.Properties.definition
+                    $flowConnections = @()
+                    
+                    # Extract connection references from flow definition
+                    if ($flowDefinition.parameters -and $flowDefinition.parameters.'$connections') {
+                        $connectionRefs = $flowDefinition.parameters.'$connections'.value
+                        
+                        foreach ($connRef in $connectionRefs.PSObject.Properties) {
+                            $connectionId = $connRef.Value.connectionId
+                            if ($connectionId) {
+                                # Find the actual connection object
+                                $actualConnection = $allConnections | Where-Object { $_.Name -eq ($connectionId -split '/')[-1] }
+                                if ($actualConnection) {
+                                    $flowConnections += $actualConnection
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Alternative method: look for connections in actions
+                    if ($flowDefinition.actions) {
+                        foreach ($action in $flowDefinition.actions.PSObject.Properties) {
+                            if ($action.Value.inputs -and $action.Value.inputs.host -and $action.Value.inputs.host.connectionName) {
+                                $connectionName = $action.Value.inputs.host.connectionName
+                                $actualConnection = $allConnections | Where-Object { $_.Name -eq ($connectionName -split '/')[-1] }
+                                if ($actualConnection -and $actualConnection -notin $flowConnections) {
+                                    $flowConnections += $actualConnection
+                                }
+                            }
+                        }
+                    }
                     
                     foreach ($connection in $flowConnections) {
                         # Check if connection uses a gateway
@@ -102,11 +170,11 @@ try {
                                 Environment = $env.DisplayName
                                 EnvironmentId = $env.EnvironmentName
                                 ConnectionName = $connection.DisplayName
-                                ConnectionType = $connection.Properties.connectionParameters.server
+                                ConnectionType = if ($connection.Properties.connectionParameters.server) { $connection.Properties.connectionParameters.server } else { $connection.Properties.apiId }
                                 GatewayId = $gatewayId
                                 GatewayName = if ($gateway) { $gateway.Name } else { "Gateway not found" }
                                 GatewayStatus = if ($gateway) { $gateway.Properties.status } else { "Unknown" }
-                                Owner = $flow.CreatedBy.email
+                                Owner = if ($flow.CreatedBy.email) { $flow.CreatedBy.email } else { $flow.CreatedBy.displayName }
                                 CreatedTime = $flow.CreatedTime
                                 LastModifiedTime = $flow.LastModifiedTime
                             }
@@ -116,7 +184,7 @@ try {
                         }
                     }
                 } catch {
-                    Write-Warning "Could not retrieve connections for flow: $($flow.DisplayName) - $($_.Exception.Message)"
+                    Write-Warning "Could not analyze flow: $($flow.DisplayName) - $($_.Exception.Message)"
                 }
             }
             
