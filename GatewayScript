@@ -25,52 +25,10 @@ try {
     
     Write-Host "Found $($environments.Count) environments" -ForegroundColor Cyan
     
-    # Get all data gateways (try different cmdlet names as they vary by module version)
-    Write-Host "Retrieving data gateways..." -ForegroundColor Green
-    $gateways = @()
-    
-    try {
-        # Try the most common cmdlet names
-        if (Get-Command "Get-AdminPowerAppGateway" -ErrorAction SilentlyContinue) {
-            $gateways = Get-AdminPowerAppGateway
-        }
-        elseif (Get-Command "Get-PowerAppGateway" -ErrorAction SilentlyContinue) {
-            $gateways = Get-PowerAppGateway
-        }
-        elseif (Get-Command "Get-DataGateway" -ErrorAction SilentlyContinue) {
-            $gateways = Get-DataGateway
-        }
-        else {
-            Write-Warning "No gateway cmdlet found. Gateway names will show as 'Unknown'"
-            $gateways = @()
-        }
-    }
-    catch {
-        Write-Warning "Could not retrieve gateways: $($_.Exception.Message)"
-        $gateways = @()
-    }
-    
-    Write-Host "Found $($gateways.Count) data gateways" -ForegroundColor Cyan
-    
-    # Create gateway lookup for easier reference
+    # Since gateway-specific cmdlets don't exist, we'll collect gateway info from connections
+    Write-Host "Note: Gateway cmdlets not available. Will collect gateway info from connections." -ForegroundColor Yellow
+    $discoveredGateways = @{}
     $gatewayLookup = @{}
-    foreach ($gateway in $gateways) {
-        # Handle different property names depending on the cmdlet used
-        $gatewayId = $null
-        if ($gateway.GatewayId) {
-            $gatewayId = $gateway.GatewayId
-        }
-        elseif ($gateway.Id) {
-            $gatewayId = $gateway.Id
-        }
-        elseif ($gateway.Name) {
-            $gatewayId = $gateway.Name
-        }
-        
-        if ($gatewayId) {
-            $gatewayLookup[$gatewayId] = $gateway
-        }
-    }
     
     # Process each environment
     foreach ($env in $environments) {
@@ -89,7 +47,16 @@ try {
                         # Check if connection uses a gateway
                         if ($connection.Properties.gateway -and $connection.Properties.gateway.id) {
                             $gatewayId = $connection.Properties.gateway.id
-                            $gateway = $gatewayLookup[$gatewayId]
+                            $gatewayName = if ($connection.Properties.gateway.name) { $connection.Properties.gateway.name } else { "Gateway ID: $gatewayId" }
+                            
+                            # Store discovered gateway info
+                            if (-not $discoveredGateways.ContainsKey($gatewayId)) {
+                                $discoveredGateways[$gatewayId] = @{
+                                    Id = $gatewayId
+                                    Name = $gatewayName
+                                    Type = if ($connection.Properties.gateway.type) { $connection.Properties.gateway.type } else { "Unknown" }
+                                }
+                            }
                             
                             $appGatewayInfo = [PSCustomObject]@{
                                 Type = "Power App"
@@ -98,10 +65,10 @@ try {
                                 Environment = $env.DisplayName
                                 EnvironmentId = $env.EnvironmentName
                                 ConnectionName = $connection.DisplayName
-                                ConnectionType = $connection.Properties.connectionParameters.server
+                                ConnectionType = if ($connection.Properties.connectionParameters.server) { $connection.Properties.connectionParameters.server } else { $connection.Properties.apiId }
                                 GatewayId = $gatewayId
-                                GatewayName = if ($gateway) { $gateway.Name } else { "Gateway not found" }
-                                GatewayStatus = if ($gateway) { $gateway.Properties.status } else { "Unknown" }
+                                GatewayName = $gatewayName
+                                GatewayType = if ($connection.Properties.gateway.type) { $connection.Properties.gateway.type } else { "Unknown" }
                                 Owner = $app.Owner.email
                                 CreatedTime = $app.CreatedTime
                                 LastModifiedTime = $app.LastModifiedTime
@@ -161,7 +128,16 @@ try {
                         # Check if connection uses a gateway
                         if ($connection.Properties.gateway -and $connection.Properties.gateway.id) {
                             $gatewayId = $connection.Properties.gateway.id
-                            $gateway = $gatewayLookup[$gatewayId]
+                            $gatewayName = if ($connection.Properties.gateway.name) { $connection.Properties.gateway.name } else { "Gateway ID: $gatewayId" }
+                            
+                            # Store discovered gateway info
+                            if (-not $discoveredGateways.ContainsKey($gatewayId)) {
+                                $discoveredGateways[$gatewayId] = @{
+                                    Id = $gatewayId
+                                    Name = $gatewayName
+                                    Type = if ($connection.Properties.gateway.type) { $connection.Properties.gateway.type } else { "Unknown" }
+                                }
+                            }
                             
                             $flowGatewayInfo = [PSCustomObject]@{
                                 Type = "Power Automate Flow"
@@ -172,8 +148,8 @@ try {
                                 ConnectionName = $connection.DisplayName
                                 ConnectionType = if ($connection.Properties.connectionParameters.server) { $connection.Properties.connectionParameters.server } else { $connection.Properties.apiId }
                                 GatewayId = $gatewayId
-                                GatewayName = if ($gateway) { $gateway.Name } else { "Gateway not found" }
-                                GatewayStatus = if ($gateway) { $gateway.Properties.status } else { "Unknown" }
+                                GatewayName = $gatewayName
+                                GatewayType = if ($connection.Properties.gateway.type) { $connection.Properties.gateway.type } else { "Unknown" }
                                 Owner = if ($flow.CreatedBy.email) { $flow.CreatedBy.email } else { $flow.CreatedBy.displayName }
                                 CreatedTime = $flow.CreatedTime
                                 LastModifiedTime = $flow.LastModifiedTime
@@ -203,6 +179,14 @@ try {
     if ($gatewayUsageResults.Count -gt 0) {
         Write-Host "`n=== DETAILED RESULTS ===" -ForegroundColor Green
         $gatewayUsageResults | Format-Table -Property Type, Name, Environment, GatewayName, ConnectionType, Owner -AutoSize
+        
+        # Show discovered gateways
+        if ($discoveredGateways.Count -gt 0) {
+            Write-Host "`n=== DISCOVERED GATEWAYS ===" -ForegroundColor Green
+            foreach ($gw in $discoveredGateways.Values) {
+                Write-Host "Gateway: $($gw.Name) (ID: $($gw.Id), Type: $($gw.Type))" -ForegroundColor Cyan
+            }
+        }
         
         # Group by gateway
         Write-Host "`n=== USAGE BY GATEWAY ===" -ForegroundColor Green
