@@ -1,0 +1,177 @@
+# Power Platform Data Gateway Usage Analysis Script
+# This script identifies Power Apps and Power Automate flows using on-premises data gateways
+
+# Prerequisites: Install required modules
+# Install-Module -Name Microsoft.PowerApps.Administration.PowerShell -Force
+# Install-Module -Name Microsoft.PowerApps.PowerShell -Force
+
+# Import required modules
+Import-Module Microsoft.PowerApps.Administration.PowerShell
+Import-Module Microsoft.PowerApps.PowerShell
+
+# Authenticate to Power Platform (will prompt for credentials)
+Write-Host "Authenticating to Power Platform..." -ForegroundColor Yellow
+Add-PowerAppsAccount
+
+# Initialize results arrays
+$gatewayUsageResults = @()
+$powerAppsWithGateways = @()
+$flowsWithGateways = @()
+
+try {
+    # Get all environments
+    Write-Host "Retrieving environments..." -ForegroundColor Green
+    $environments = Get-AdminPowerAppEnvironment
+    
+    Write-Host "Found $($environments.Count) environments" -ForegroundColor Cyan
+    
+    # Get all data gateways
+    Write-Host "Retrieving data gateways..." -ForegroundColor Green
+    $gateways = Get-PowerAppGateway
+    
+    Write-Host "Found $($gateways.Count) data gateways" -ForegroundColor Cyan
+    
+    # Create gateway lookup for easier reference
+    $gatewayLookup = @{}
+    foreach ($gateway in $gateways) {
+        $gatewayLookup[$gateway.GatewayId] = $gateway
+    }
+    
+    # Process each environment
+    foreach ($env in $environments) {
+        Write-Host "Processing environment: $($env.DisplayName)" -ForegroundColor Yellow
+        
+        try {
+            # Get Power Apps in this environment
+            $powerApps = Get-AdminPowerApp -EnvironmentName $env.EnvironmentName
+            
+            foreach ($app in $powerApps) {
+                try {
+                    # Get app connections
+                    $connections = Get-AdminPowerAppConnection -EnvironmentName $env.EnvironmentName -AppName $app.AppName
+                    
+                    foreach ($connection in $connections) {
+                        # Check if connection uses a gateway
+                        if ($connection.Properties.gateway -and $connection.Properties.gateway.id) {
+                            $gatewayId = $connection.Properties.gateway.id
+                            $gateway = $gatewayLookup[$gatewayId]
+                            
+                            $appGatewayInfo = [PSCustomObject]@{
+                                Type = "Power App"
+                                Name = $app.DisplayName
+                                Id = $app.AppName
+                                Environment = $env.DisplayName
+                                EnvironmentId = $env.EnvironmentName
+                                ConnectionName = $connection.DisplayName
+                                ConnectionType = $connection.Properties.connectionParameters.server
+                                GatewayId = $gatewayId
+                                GatewayName = if ($gateway) { $gateway.Name } else { "Gateway not found" }
+                                GatewayStatus = if ($gateway) { $gateway.Properties.status } else { "Unknown" }
+                                Owner = $app.Owner.email
+                                CreatedTime = $app.CreatedTime
+                                LastModifiedTime = $app.LastModifiedTime
+                            }
+                            
+                            $powerAppsWithGateways += $appGatewayInfo
+                            $gatewayUsageResults += $appGatewayInfo
+                        }
+                    }
+                } catch {
+                    Write-Warning "Could not retrieve connections for app: $($app.DisplayName) - $($_.Exception.Message)"
+                }
+            }
+            
+            # Get Power Automate flows in this environment
+            $flows = Get-AdminFlow -EnvironmentName $env.EnvironmentName
+            
+            foreach ($flow in $flows) {
+                try {
+                    # Get flow connections
+                    $flowConnections = Get-AdminFlowConnection -EnvironmentName $env.EnvironmentName -FlowName $flow.FlowName
+                    
+                    foreach ($connection in $flowConnections) {
+                        # Check if connection uses a gateway
+                        if ($connection.Properties.gateway -and $connection.Properties.gateway.id) {
+                            $gatewayId = $connection.Properties.gateway.id
+                            $gateway = $gatewayLookup[$gatewayId]
+                            
+                            $flowGatewayInfo = [PSCustomObject]@{
+                                Type = "Power Automate Flow"
+                                Name = $flow.DisplayName
+                                Id = $flow.FlowName
+                                Environment = $env.DisplayName
+                                EnvironmentId = $env.EnvironmentName
+                                ConnectionName = $connection.DisplayName
+                                ConnectionType = $connection.Properties.connectionParameters.server
+                                GatewayId = $gatewayId
+                                GatewayName = if ($gateway) { $gateway.Name } else { "Gateway not found" }
+                                GatewayStatus = if ($gateway) { $gateway.Properties.status } else { "Unknown" }
+                                Owner = $flow.CreatedBy.email
+                                CreatedTime = $flow.CreatedTime
+                                LastModifiedTime = $flow.LastModifiedTime
+                            }
+                            
+                            $flowsWithGateways += $flowGatewayInfo
+                            $gatewayUsageResults += $flowGatewayInfo
+                        }
+                    }
+                } catch {
+                    Write-Warning "Could not retrieve connections for flow: $($flow.DisplayName) - $($_.Exception.Message)"
+                }
+            }
+            
+        } catch {
+            Write-Warning "Could not process environment: $($env.DisplayName) - $($_.Exception.Message)"
+        }
+    }
+    
+    # Display results
+    Write-Host "`n=== SUMMARY ===" -ForegroundColor Green
+    Write-Host "Total Power Apps using gateways: $($powerAppsWithGateways.Count)" -ForegroundColor Cyan
+    Write-Host "Total Power Automate flows using gateways: $($flowsWithGateways.Count)" -ForegroundColor Cyan
+    Write-Host "Total resources using gateways: $($gatewayUsageResults.Count)" -ForegroundColor Cyan
+    
+    # Display detailed results
+    if ($gatewayUsageResults.Count -gt 0) {
+        Write-Host "`n=== DETAILED RESULTS ===" -ForegroundColor Green
+        $gatewayUsageResults | Format-Table -Property Type, Name, Environment, GatewayName, ConnectionType, Owner -AutoSize
+        
+        # Group by gateway
+        Write-Host "`n=== USAGE BY GATEWAY ===" -ForegroundColor Green
+        $gatewayUsageResults | Group-Object GatewayName | ForEach-Object {
+            Write-Host "`nGateway: $($_.Name)" -ForegroundColor Yellow
+            Write-Host "  Resources using this gateway: $($_.Count)"
+            $_.Group | ForEach-Object {
+                Write-Host "    - $($_.Type): $($_.Name) (Environment: $($_.Environment))" -ForegroundColor White
+            }
+        }
+    } else {
+        Write-Host "No Power Apps or Power Automate flows found using on-premises data gateways." -ForegroundColor Yellow
+    }
+    
+    # Export to CSV
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $csvPath = "PowerPlatformGatewayUsage_$timestamp.csv"
+    
+    if ($gatewayUsageResults.Count -gt 0) {
+        $gatewayUsageResults | Export-Csv -Path $csvPath -NoTypeInformation
+        Write-Host "`nResults exported to: $csvPath" -ForegroundColor Green
+    }
+    
+    # Export separate files for Power Apps and Flows if needed
+    if ($powerAppsWithGateways.Count -gt 0) {
+        $powerAppsWithGateways | Export-Csv -Path "PowerAppsGatewayUsage_$timestamp.csv" -NoTypeInformation
+        Write-Host "Power Apps results exported to: PowerAppsGatewayUsage_$timestamp.csv" -ForegroundColor Green
+    }
+    
+    if ($flowsWithGateways.Count -gt 0) {
+        $flowsWithGateways | Export-Csv -Path "PowerAutomateGatewayUsage_$timestamp.csv" -NoTypeInformation
+        Write-Host "Power Automate results exported to: PowerAutomateGatewayUsage_$timestamp.csv" -ForegroundColor Green
+    }
+    
+} catch {
+    Write-Error "An error occurred: $($_.Exception.Message)"
+    Write-Error $_.ScriptStackTrace
+}
+
+Write-Host "`nScript completed!" -ForegroundColor Green
