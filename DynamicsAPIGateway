@@ -1,0 +1,50 @@
+# Complete Connection Reference Discovery Script
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$EnvironmentId,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$TenantId
+)
+
+# Install required modules if not present
+$modules = @(
+    "Microsoft.PowerApps.Administration.PowerShell",
+    "Microsoft.Xrm.Data.PowerShell"
+)
+
+foreach ($module in $modules) {
+    if (!(Get-Module -ListAvailable -Name $module)) {
+        Install-Module -Name $module -Scope CurrentUser -Force
+    }
+}
+
+# Method 1: Get connections via Admin PowerShell
+Write-Host "=== Getting Connections via Admin PowerShell ===" -ForegroundColor Green
+$connections = Get-AdminPowerAppConnection -EnvironmentName $EnvironmentId
+$connections | Where-Object { $_.properties.apiId -like "*gateway*" } | Select-Object displayName, name, properties
+
+# Method 2: Query Dataverse Web API for connection references
+Write-Host "`n=== Querying Connection References via Dataverse API ===" -ForegroundColor Green
+
+# Get environment URL
+$environment = Get-AdminPowerAppEnvironment -EnvironmentName $EnvironmentId
+$environmentUrl = $environment.properties.linkedEnvironmentMetadata.instanceUrl
+
+if ($environmentUrl) {
+    # Note: You'll need to implement authentication token acquisition
+    Write-Host "Environment URL: $environmentUrl"
+    Write-Host "Connection References API Endpoint: $environmentUrl/api/data/v9.2/connectionreferences"
+    
+    # Example query (requires authentication)
+    # $connectionRefsUri = "$environmentUrl/api/data/v9.2/connectionreferences"
+    # $connectionRefs = Invoke-RestMethod -Uri $connectionRefsUri -Headers $authHeaders -Method GET
+}
+
+# Method 3: Generate settings file for connection references
+Write-Host "`n=== Available PAC CLI Commands ===" -ForegroundColor Green
+Write-Host "Use these commands after authenticating with PAC CLI:"
+Write-Host "pac connection list --environment $EnvironmentId"
+Write-Host "pac solution create-settings --solution-zip <path> --settings-file settings.json"
+
+Write-Host "`nScript completed. Use the information above to access connection references programmatically." -ForegroundColor Yellow
